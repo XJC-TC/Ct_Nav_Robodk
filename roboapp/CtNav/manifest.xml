@@ -1,0 +1,39 @@
+<?xml version='1.0' encoding='utf-8'?>
+<packageManifest xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://schemas.robodk.com/package/2022/manifest" version="1.0">
+  <cp:coreProperties>
+    <cp:category>Application</cp:category>
+    <cp:contentStatus>Draft</cp:contentStatus>
+    <dc:creator>Multiply Labs</dc:creator>
+    <dc:description>Drive RoboDK arms through the navigation nodes defined in ct_config.</dc:description>
+    <dc:identifier>com.multiplylabs.app.ctnav</dc:identifier>
+    <cp:keywords>ct_config,navigation,mhr,rail,nodes</cp:keywords>
+    <dc:language>eng</dc:language>
+    <cp:lastModifiedBy>Multiply Labs</cp:lastModifiedBy>
+    <cp:revision>1</cp:revision>
+    <dc:title>CtNav</dc:title>
+    <cp:version>0.1.0</cp:version>
+  </cp:coreProperties>
+  <extraProperties>
+    <company>Multiply Labs</company>
+  </extraProperties>
+  <assets>
+    <asset cpu="any" system="any" target="$(SourcePath)">/CtNav/CtNavPanel.py</asset>
+    <asset cpu="any" system="any" target="$(SourcePath)">/CtNav/CtNavPanel.svg</asset>
+    <asset cpu="any" system="any" target="$(SourcePath)">/CtNav/AppConfig.ini</asset>
+    <asset cpu="any" system="any" target="$(SourcePath)">/CtNav/README.md</asset>
+    <asset cpu="any" system="any" target="$(SourcePath)">/CtNav/requirements.txt</asset>
+    <asset cpu="any" system="any" target="$(SourcePath)">/CtNav/station_map.yaml</asset>
+    <asset cpu="any" system="any" target="$(SourcePath)">/CtNav/ct_nav/__init__.py</asset>
+    <asset cpu="any" system="any" target="$(SourcePath)">/CtNav/ct_nav/config.py</asset>
+    <asset cpu="any" system="any" target="$(SourcePath)">/CtNav/ct_nav/park_poses.py</asset>
+    <asset cpu="any" system="any" target="$(SourcePath)">/CtNav/ct_nav/planner.py</asset>
+    <asset cpu="any" system="any" target="$(SourcePath)">/CtNav/ct_nav/units.py</asset>
+    <asset cpu="any" system="any" target="$(SourcePath)">/CtNav/ct_nav_robodk/__init__.py</asset>
+    <asset cpu="any" system="any" target="$(SourcePath)">/CtNav/ct_nav_robodk/connection.py</asset>
+    <asset cpu="any" system="any" target="$(SourcePath)">/CtNav/ct_nav_robodk/driver.py</asset>
+    <asset cpu="any" system="any" target="$(SourcePath)">/CtNav/ct_nav_robodk/program_export.py</asset>
+    <asset cpu="any" system="any" target="$(SourcePath)">/CtNav/ct_nav_robodk/station_map.py</asset>
+    <asset cpu="any" system="any" target="$(SourcePath)">/CtNav/ct_nav_robodk/ui/__init__.py</asset>
+    <asset cpu="any" system="any" target="$(SourcePath)">/CtNav/ct_nav_robodk/ui/panel.py</asset>
+  </assets>
+</packageManifest>

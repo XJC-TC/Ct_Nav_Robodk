@@ -1,0 +1,64 @@
+# How ct_config arms map onto RoboDK station items.
+#
+# Verified against NABOO-01_20260818.rdk with scripts/inspect_station.py. Item names,
+# joint counts and joint limits below are what RoboDK reported, not guesses:
+#
+#   MHR-XZ        ROBOT dof=7  joint 7 limits [0, 840]    (z rail)
+#                 parents: UR10e Base < z-axis rail < Z-AXIS F < x-axis rail < MHR XZ
+#   x-axis rail   ROBOT dof=1  limits [0, 9365]
+#   z-axis rail   ROBOT dof=1  limits [0, 840]   linked to MHR-XZ
+#   MHR-X         ROBOT dof=7  joint 7 limits [0, 9365]   (x rail)
+#   MHR-U1        ROBOT dof=6  no rails
+#   MHR-U2        ROBOT dof=6  no rails
+#
+# Every rail is identity-mapped because the RoboDK joint limits already match the
+# travel_bounds in ct_config: azula1/mhr_xz/z_rail.yaml is 0-840mm and
+# azula1/mhr_x/x_rail.yaml is 0-9365mm. If a rail on another station has a different
+# zero, jog it to a known ct_config position and use the panel's "Calibrate rail"
+# button, which writes station_map.local.yaml (gitignored) rather than this file.
+#
+# kind:
+#   robot_axis  extra joint of the arm's own robot; joint_index is 1-based
+#   mechanism   separate RoboDK item to command on its own
+#   frame       plain frame translated along frame_axis (no station here needs it)
+
+station: NABOO-01
+
+arms:
+  mhr_xz:
+    robot_item: MHR-XZ
+    ur_joint_count: 6
+    rails:
+      # Independent 1-axis mechanism above the UR in the station tree.
+      x:
+        kind: mechanism
+        item: x-axis rail
+        joint_index: 1
+        scale: 1.0
+        offset: 0.0
+      # RoboDK reports z-axis rail as linked to MHR-XZ, so it is driven as joint 7.
+      z:
+        kind: robot_axis
+        joint_index: 7
+        scale: 1.0
+        offset: 0.0
+
+  mhr_x:
+    robot_item: MHR-X
+    ur_joint_count: 6
+    rails:
+      x:
+        kind: robot_axis
+        joint_index: 7
+        scale: 1.0
+        offset: 0.0
+
+  mhr_u1:
+    robot_item: MHR-U1
+    ur_joint_count: 6
+    rails: {}
+
+  mhr_u2:
+    robot_item: MHR-U2
+    ur_joint_count: 6
+    rails: {}

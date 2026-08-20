@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72">
+  <!-- An x rail with a z rail rising from it, and the navigation nodes along the way. -->
+  <rect x="6" y="52" width="60" height="6" rx="3" style="fill:#2f6fed;fill-opacity:0.45;"/>
+  <rect x="42" y="14" width="6" height="40" rx="3" style="fill:#2f6fed;fill-opacity:0.45;"/>
+  <circle cx="12" cy="55" r="5" style="fill:#2f6fed;"/>
+  <circle cx="45" cy="55" r="5" style="fill:#2f6fed;"/>
+  <circle cx="45" cy="18" r="6" style="fill:#d11317;"/>
+</svg>
