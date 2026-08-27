@@ -27,6 +27,7 @@ from ct_nav import (
     PlanError,
     StepKind,
     Visit,
+    discover_cluster_dir,
     load_cluster,
     plan_move,
     plan_park,
@@ -54,7 +55,6 @@ from ..station_map import (
     with_rail_offset,
 )
 
-DEFAULT_CLUSTER = r"D:\Bitbucket\ct_config\azula1"
 SETTINGS_ORG = "MultiplyLabs"
 SETTINGS_APP = "CtNav"
 
@@ -95,8 +95,11 @@ class CtNavPanel(QtWidgets.QWidget):
         self._step_click_timer.setSingleShot(True)
         self._step_click_timer.timeout.connect(self._on_step_click_timeout)
 
+        discovered = discover_cluster_dir()
         self.cluster_edit.setText(
-            self._settings.value("cluster_dir", DEFAULT_CLUSTER, type=str)
+            self._settings.value(
+                "cluster_dir", str(discovered) if discovered else "", type=str
+            )
         )
         QtCore.QTimer.singleShot(0, self._initial_load)
 
@@ -125,7 +128,7 @@ class CtNavPanel(QtWidgets.QWidget):
         row = QtWidgets.QHBoxLayout(box)
 
         self.cluster_edit = QtWidgets.QLineEdit()
-        self.cluster_edit.setPlaceholderText(r"e.g. D:\Bitbucket\ct_config\azula1")
+        self.cluster_edit.setPlaceholderText("e.g. ~/Bitbucket/ct_config/azula1")
         browse = QtWidgets.QPushButton("Browse ...")
         browse.clicked.connect(self._on_browse)
         reload_button = QtWidgets.QPushButton("Reload")

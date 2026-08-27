@@ -4,6 +4,7 @@ Loads a ct_config cluster and turns a chosen navigation node into a flat list of
 moves. ``ct_nav_robodk`` is the only place that talks to RoboDK.
 """
 
+from .cluster_paths import discover_cluster_dir
 from .config import (
     ArmConfig,
     ClusterConfig,
@@ -58,6 +59,7 @@ __all__ = [
     "UnitError",
     "arm_chain",
     "discover_arm_dirs",
+    "discover_cluster_dir",
     "highway_route",
     "is_park_name",
     "load_arm",

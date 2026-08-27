@@ -40,17 +40,45 @@ Independently, a visit chooses which half of the arm tree to play:
 
 ## Setup
 
+Quit RoboDK first. Then from the repository root:
+
 ```bash
-pip install -r requirements.txt
-python scripts/install_app.py
+# Linux / macOS
+python3 scripts/install_app.py -y
+
+# Windows
+python scripts/install_app.py -y
 ```
 
-The installer builds a self-contained copy under `dist/CtNav`, installs it into RoboDK's
-`Apps/` and `Addins/` folders, and prints the interpreter path to configure. Then in
-RoboDK set `Tools > Options > Python > Python interpreter` to that **absolute** path and
-restart.
+The installer builds a self-contained copy under `dist/CtNav` and installs it:
 
-Re-run `python scripts/install_app.py --sync` after changing code.
+- **Windows** — RoboDK install-root `Apps/` (AppLoader) plus `Addins/`, and Enable in
+  `AddinManager.ini` when that file already exists. Interpreter discovery is unchanged
+  (no `{repo}/.venv`).
+- **Linux / macOS** — user-level Add-ins only
+  (`~/.local/share/RoboDK/Addins` on Linux,
+  `~/Library/Application Support/RoboDK/Addins` on macOS). It does not write into
+  `RoboDK.app`. Runtime deps go in `{repo}/.venv`, created with the `python3` that
+  ran the installer (3.9+).
+
+If RoboDK has never been opened on this account, it has not written `settings.ini` /
+`AddinManager.ini` yet. Open it once, quit fully, then re-run the same command. With
+those files present, `-y` writes the interpreter **absolute** path into
+`Path_PythonRun` / `Path_PythonRun2` and enables the Add-in.
+
+Restart RoboDK afterwards. Confirm `Tools > Options > Python > Python interpreter`
+still shows that absolute path.
+
+Re-run `python3 scripts/install_app.py --sync` after changing code (`--sync` implies
+`-y`).
+
+Linux / macOS toolbar click has **not** been verified on a real RoboDK in this pass.
+The installer paths, venv, and ini writes are covered by tests. If the CtNav button
+does nothing after a successful install, it is still the traps below.
+
+`--python /path/to/python` skips `.venv` and installs deps into that interpreter
+instead. On Linux that will fail if pip refuses an externally-managed environment;
+omit `--python` and let the installer use `{repo}/.venv`.
 
 ### Two environment traps
 
@@ -64,10 +92,20 @@ apply here unchanged:
 2. **Anaconda base usually cannot load PySide6.** conda's Qt5 (`qt-main` / `pyqt`) shadows
    a pip-installed PySide6 and `from PySide6 import QtCore` fails with
    `DLL load failed ... the specified procedure could not be found`. Use a standalone
-   CPython; `install_app.py` probes for one and warns if the chosen interpreter is broken.
+   CPython; `install_app.py` probes for one on Windows and warns if the chosen
+   interpreter is broken. On Linux the same import fails when `libxcb-cursor0` (and
+   related) packages are missing — the installer prints the `apt`/`dnf` line and exits
+   non-zero.
 
-`install_app.py` also updates whichever of `Path_PythonRun` / `Path_PythonRun2` your
-RoboDK version uses, if you pass `--write-python-setting` with RoboDK closed.
+On Linux, `python3 -m venv` failing usually means `sudo apt install python3-venv`. On
+macOS, do not use the Apple `/usr/bin/python3` stub; install 3.9+ from python.org or
+Homebrew and invoke that `python3`.
+
+`-y` / `--sync` updates whichever of `Path_PythonRun` / `Path_PythonRun2` already exists
+in RoboDK's `settings.ini` (Windows `%APPDATA%\RoboDK`, macOS
+`~/Library/Application Support/RoboDK`, Linux `~/.config/RoboDK` and
+`~/.local/share/RoboDK`). It never creates those files. `--write-python-setting` still
+does the same without requiring `-y`.
 
 ## Using the panel
 
@@ -77,8 +115,13 @@ Open it from the **CtNav** toolbar button, or run it standalone against an open 
 python -m ct_nav_robodk.ui.panel
 ```
 
-- **ct_config cluster** — defaults to `D:\Bitbucket\ct_config\azula1`; the choice is
-  remembered between sessions.
+On Linux / macOS after install, use the venv the installer created:
+`{repo}/.venv/bin/python -m ct_nav_robodk.ui.panel`.
+
+- **ct_config cluster** — first existing of `CT_CONFIG_CLUSTER`,
+  `~/Bitbucket/ct_config/azula1`, `~/bitbucket/ct_config/azula1`, a `ct_config/azula1`
+  sibling of this repo, and on Windows `D:\Bitbucket\ct_config\azula1`. If none exist the
+  field starts empty. The choice is remembered between sessions.
 - **Arm / Module / Target / Node / Visit** — cascading, populated from the cluster.
   Visit defaults to enter only.
 - **Highway node** — where the arm is standing. Full navigation routes the rails from
@@ -201,6 +244,7 @@ ct_nav/                        pure Python, no robodk import
   config.py                    ClusterConfig / ArmConfig loaders
   park_poses.py                the park pose tables and the base-angle rule
   planner.py                   highway routing + arm chain -> MoveStep list
+  cluster_paths.py             find azula1 without a hardcoded D:\\ path
 ct_nav_robodk/                 RoboDK bindings
   connection.py                Robolink with a timeout a 600 MB station survives
   station_map.py               station_map.yaml load / save / calibrate

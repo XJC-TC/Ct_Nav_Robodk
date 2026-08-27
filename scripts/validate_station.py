@@ -14,7 +14,7 @@ you have not got unsaved work in.
 
 Usage:
     python scripts/validate_station.py
-    python scripts/validate_station.py --cluster D:\\Bitbucket\\ct_config\\azula1
+    python scripts/validate_station.py --cluster ~/Bitbucket/ct_config/azula1
     python scripts/validate_station.py --all-arms --animate
 """
 
@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ct_nav import ArmConfig, ClusterConfig, Mode, load_cluster, plan_move  # noqa: E402
+from ct_nav import ArmConfig, ClusterConfig, Mode, discover_cluster_dir, load_cluster, plan_move  # noqa: E402
 from ct_nav_robodk.connection import ConnectionError_, active_station_name, connect  # noqa: E402
 from ct_nav_robodk.driver import (  # noqa: E402
     Driver,
@@ -36,8 +36,6 @@ from ct_nav_robodk.driver import (  # noqa: E402
     read_rail_pose,
 )
 from ct_nav_robodk.station_map import StationMapError, load_default_station_map  # noqa: E402
-
-DEFAULT_CLUSTER = Path(r"D:\Bitbucket\ct_config\azula1")
 
 # Chosen to exercise every distinct shape in azula1: mhr_xz crossing between modules on
 # both rails, an mhr_xz target whose highway hop is a single step, mhr_x with only an x
@@ -140,7 +138,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--cluster", type=Path, default=DEFAULT_CLUSTER)
+    parser.add_argument(
+        "--cluster",
+        type=Path,
+        default=None,
+        help="ct_config cluster directory (default: discover azula1; see CT_CONFIG_CLUSTER)",
+    )
     parser.add_argument(
         "--mode",
         type=Mode,
@@ -160,9 +163,16 @@ def main() -> int:
     )
     parser.add_argument("--speed", type=float, default=8.0, help="Animation speed multiplier")
     args = parser.parse_args()
+    cluster_path = args.cluster or discover_cluster_dir()
+    if cluster_path is None:
+        print(
+            "Cannot find a ct_config cluster. Pass --cluster or set CT_CONFIG_CLUSTER.",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
-        cluster = load_cluster(args.cluster)
+        cluster = load_cluster(cluster_path)
     except Exception as exc:
         print(f"Cannot load {args.cluster}: {exc}", file=sys.stderr)
         return 1

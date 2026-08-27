@@ -1,20 +1,25 @@
 """Cross-platform installer / sync for the CtNav RoboDK App.
 
-Builds a self-contained copy of the App (see build_package.py), installs it into this
-machine's RoboDK Apps folder (and, on Windows, the Add-ins folder + the AddinManager
-enable list), optionally pip-installs runtime deps, and prints the Python-interpreter
-path to paste into RoboDK Options.
+Builds a self-contained copy of the App (see build_package.py) and installs it:
 
-The git checkout under `roboapp/` is never modified -- only `dist/` (gitignored) and the
-local RoboDK install / user settings are touched. Re-run with `-y` / `--sync` after
-changing code to refresh the installed copy.
+- Windows: RoboDK install-root ``Apps/`` (AppLoader) plus ``Addins/``, and Enable in
+  ``AddinManager.ini`` when that file already exists.
+- Linux / macOS: user-level Add-ins only (never the ``.app`` bundle). Creates the
+  Addins directory if needed. Does not invent ``settings.ini`` / ``AddinManager.ini``.
+
+On Linux / macOS, runtime deps go in ``{repo}/.venv`` created with this interpreter
+(Python 3.9+). Windows keeps the existing interpreter probe and does not create a venv.
+
+``-y`` / ``--sync`` writes the interpreter absolute path into existing RoboDK
+``settings.ini`` files when RoboDK is fully quit.
 
 Usage:
-    python scripts/install_app.py
-    python scripts/install_app.py -y --python H:\\Python3.11\\python.exe
-    python scripts/install_app.py --sync          # same as -y: rebuild + overwrite
+    python3 scripts/install_app.py -y          # Linux / macOS (quit RoboDK first)
+    python scripts/install_app.py -y           # Windows
+    python scripts/install_app.py --sync
+    python scripts/install_app.py --python /path/to/python
     python scripts/install_app.py --apps-dir "D:\\RoboDK\\Apps"
-    python scripts/install_app.py --write-python-setting   # RoboDK must be closed
+    python scripts/install_app.py --addins-dir "~/Library/Application Support/RoboDK/Addins"
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -35,6 +41,9 @@ import build_package  # noqa: E402
 APP_NAME = "CtNav"
 ADDIN_ID = "com.multiplylabs.app.ctnav"
 RUNTIME_DEPS = ["robodk>=5.6.0", "PyYAML>=6.0", "PySide6>=6.5"]
+MIN_PYTHON = (3, 9)
+REPO_ROOT = Path(__file__).resolve().parent.parent
+VENV_DIR = REPO_ROOT / ".venv"
 
 # Imports that must all succeed, including a real Qt DLL load, for an interpreter to be
 # usable by the App.
@@ -44,6 +53,28 @@ _DEP_CHECK = (
     "if missing:\n"
     "    sys.exit(1)\n"
     "from PySide6 import QtCore  # noqa: F401\n"
+)
+
+_OPEN_ONCE = (
+    "RoboDK has not written its user settings yet. Open RoboDK once, quit it fully, "
+    "then re-run:\n  python3 scripts/install_app.py -y"
+)
+
+_VENV_FAIL = (
+    "Could not create a venv with {creator}.\n"
+    "On Debian/Ubuntu: sudo apt install python3-venv\n"
+    "On macOS: do not use the Apple /usr/bin/python3 stub; install Python 3.9+ from "
+    "python.org or Homebrew, then re-run:\n"
+    "  python3 scripts/install_app.py -y"
+)
+
+_PYSIDE_LINUX = (
+    "PySide6 is installed but QtCore failed to load (missing system libraries).\n"
+    "Debian/Ubuntu: sudo apt install libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 "
+    "libxcb-keysyms1 libxcb-randr0 libxcb-render-util0\n"
+    "Fedora:        sudo dnf install xcb-util-cursor libxkbcommon-x11 xcb-util-wm "
+    "xcb-util-keysyms\n"
+    "Then re-run: python3 scripts/install_app.py -y"
 )
 
 
@@ -109,6 +140,77 @@ def find_addins_dir(apps_dir: Path) -> Path | None:
     """Sibling Addins folder next to Apps (Windows / modern RoboDK layouts)."""
     addins = apps_dir.parent / "Addins"
     return addins if addins.is_dir() else None
+
+
+def robodk_user_data_dirs(
+    *,
+    system: str | None = None,
+    home: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> list[Path]:
+    """Candidate roots for settings.ini, AddinManager.ini, and user Addins."""
+    os_name = platform.system() if system is None else system
+    home_path = Path.home() if home is None else Path(home)
+    env = os.environ if environ is None else environ
+
+    if os_name == "Windows":
+        return [home_path / "AppData/Roaming/RoboDK"]
+    if os_name == "Darwin":
+        return [home_path / "Library/Application Support/RoboDK"]
+
+    xdg_data = Path(env["XDG_DATA_HOME"]) if env.get("XDG_DATA_HOME") else home_path / ".local/share"
+    xdg_config = Path(env["XDG_CONFIG_HOME"]) if env.get("XDG_CONFIG_HOME") else home_path / ".config"
+    dirs = [xdg_data / "RoboDK", xdg_config / "RoboDK"]
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for path in dirs:
+        if path in seen:
+            continue
+        seen.add(path)
+        out.append(path)
+    return out
+
+
+def user_addins_dir(
+    *,
+    system: str | None = None,
+    home: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    """Canonical user-level Addins directory (need not exist yet)."""
+    os_name = platform.system() if system is None else system
+    home_path = Path.home() if home is None else Path(home)
+    env = os.environ if environ is None else environ
+    if os_name == "Windows":
+        return home_path / "AppData/Roaming/RoboDK/Addins"
+    if os_name == "Darwin":
+        return home_path / "Library/Application Support/RoboDK/Addins"
+    xdg_data = Path(env["XDG_DATA_HOME"]) if env.get("XDG_DATA_HOME") else home_path / ".local/share"
+    return xdg_data / "RoboDK" / "Addins"
+
+
+def candidate_settings_ini(
+    *,
+    system: str | None = None,
+    home: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> list[Path]:
+    return [
+        directory / "settings.ini"
+        for directory in robodk_user_data_dirs(system=system, home=home, environ=environ)
+    ]
+
+
+def candidate_addin_manager_ini(
+    *,
+    system: str | None = None,
+    home: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> list[Path]:
+    return [
+        directory / "AddinManager.ini"
+        for directory in robodk_user_data_dirs(system=system, home=home, environ=environ)
+    ]
 
 
 def prompt_for_apps_dir() -> Path:
@@ -224,23 +326,12 @@ def install_into_addins(addins_dir: Path, build_dir: Path) -> Path:
     return addin_root
 
 
-def enable_addin_windows(addin_root: Path) -> None:
-    """Append the add-in to the user-local AddinManager.ini Enabled list."""
-    ami = Path.home() / "AppData/Roaming/RoboDK/AddinManager.ini"
-    if not ami.is_file():
-        print(f"Note: {ami} not found; enable CtNav in Tools > Add-in Manager after restart.")
-        return
-
-    addin_path = str(addin_root.resolve()).replace("\\", "/")
-    text = ami.read_text(encoding="utf-8", errors="replace")
+def _patch_addin_manager_text(text: str, addin_path: str) -> str | None:
     if addin_path in text:
-        print(f"Add-in already listed in {ami.name}")
-        return
-
+        return text
     match = re.search(r"(?ms)^\[Enabled\]\s*\nsize=(\d+)(.*?)(?=^\[|\Z)", text)
     if not match:
-        print(f"Note: could not parse [Enabled] in {ami}; enable manually in Add-in Manager.")
-        return
+        return None
 
     old_size = int(match.group(1))
     body = match.group(2).rstrip("\n")
@@ -256,9 +347,63 @@ def enable_addin_windows(addin_root: Path) -> None:
             f"{w_size + 1}\\path={addin_path}\n{w_size + 1}\\checked=true\n"
         )
         text = text[: watchdog.start()] + new_watch + text[watchdog.end() :]
+    return text
 
-    ami.write_text(text, encoding="utf-8", newline="\n")
-    print(f"Enabled add-in in {ami}")
+
+def enable_addin(
+    addin_root: Path,
+    *,
+    ini_files: list[Path] | None = None,
+    system: str | None = None,
+    home: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    """Append the add-in to existing AddinManager.ini files. Never creates the file.
+
+    Returns ``enabled``, ``already``, ``missing``, or ``unparsed``.
+    """
+    files = ini_files
+    if files is None:
+        files = [
+            path
+            for path in candidate_addin_manager_ini(system=system, home=home, environ=environ)
+            if path.is_file()
+        ]
+    existing = [path for path in files if path.is_file()]
+    if not existing:
+        print(
+            "Note: AddinManager.ini not found; enable CtNav in Tools > Add-in Manager "
+            "after restart, or open RoboDK once then re-run this installer."
+        )
+        return "missing"
+
+    addin_path = str(addin_root.resolve()).replace("\\", "/")
+    statuses: list[str] = []
+    for ami in existing:
+        text = ami.read_text(encoding="utf-8", errors="replace")
+        if addin_path in text:
+            print(f"Add-in already listed in {ami}")
+            statuses.append("already")
+            continue
+        patched = _patch_addin_manager_text(text, addin_path)
+        if patched is None:
+            print(f"Note: could not parse [Enabled] in {ami}; enable manually in Add-in Manager.")
+            statuses.append("unparsed")
+            continue
+        ami.write_text(patched, encoding="utf-8", newline="\n")
+        print(f"Enabled add-in in {ami}")
+        statuses.append("enabled")
+
+    if "enabled" in statuses:
+        return "enabled"
+    if "already" in statuses:
+        return "already"
+    return "unparsed"
+
+
+def enable_addin_windows(addin_root: Path) -> str:
+    """Windows entry point used by the install-root Add-ins copy."""
+    return enable_addin(addin_root, system="Windows")
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +443,14 @@ def python_pyside_broken(python_path: str) -> bool:
         "sys.exit(0)\n"
     )
     return _run_probe(python_path, code) == 1
+
+
+def python_meets_min(python_path: str) -> bool:
+    code = (
+        "import sys\n"
+        f"sys.exit(0 if sys.version_info >= {MIN_PYTHON} else 1)\n"
+    )
+    return _run_probe(python_path, code) == 0
 
 
 def candidate_python_interpreters() -> list[Path]:
@@ -377,9 +530,78 @@ def resolve_python(explicit: str | None) -> str | None:
     return current if Path(current).is_file() else None
 
 
+def venv_python(venv_dir: Path, *, system: str | None = None) -> Path:
+    os_name = platform.system() if system is None else system
+    if os_name == "Windows":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
+def ensure_venv(creator: str, venv_dir: Path, *, system: str | None = None) -> str:
+    """Create ``venv_dir`` with ``creator`` if needed; return the venv interpreter path."""
+    python_path = venv_python(venv_dir, system=system)
+    if python_path.is_file():
+        return str(python_path.resolve())
+    try:
+        result = subprocess.run(
+            [creator, "-m", "venv", str(venv_dir)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SystemExit(_VENV_FAIL.format(creator=creator) + f"\n({exc})") from exc
+    if result.returncode != 0 or not python_path.is_file():
+        detail = (result.stderr or result.stdout or "").strip()
+        extra = f"\n{detail}" if detail else ""
+        raise SystemExit(_VENV_FAIL.format(creator=creator) + extra)
+    return str(python_path.resolve())
+
+
 def install_dependencies(python_path: str) -> None:
     print(f"Installing runtime dependencies into {python_path} ...")
-    subprocess.run([python_path, "-m", "pip", "install", *RUNTIME_DEPS], check=True)
+    try:
+        subprocess.run(
+            [python_path, "-m", "pip", "install", *RUNTIME_DEPS],
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        extra = ""
+        if platform.system() != "Windows":
+            extra = (
+                "\nIf pip refused an externally-managed environment, drop --python "
+                f"so CtNav can use {VENV_DIR}."
+            )
+        raise SystemExit(
+            f"pip install failed for {python_path} (exit {exc.returncode}).{extra}"
+        ) from exc
+
+
+def pyside_load_failure_hint(*, system: str | None = None) -> str:
+    os_name = platform.system() if system is None else system
+    if os_name == "Linux":
+        return _PYSIDE_LINUX
+    if os_name == "Darwin":
+        return (
+            "PySide6 is installed but QtCore failed to load.\n"
+            "Use a Homebrew or python.org CPython 3.9+, not conda base, then re-run:\n"
+            "  python3 scripts/install_app.py -y"
+        )
+    return (
+        "PySide6 is installed but QtCore failed to load "
+        "(common with Anaconda base + conda qt-main/pyqt). "
+        "Use a standalone CPython."
+    )
+
+
+def require_working_pyside(python_path: str, *, system: str | None = None) -> None:
+    if python_has_deps(python_path):
+        return
+    if python_pyside_broken(python_path):
+        raise SystemExit(pyside_load_failure_hint(system=system))
+    raise SystemExit(
+        f"{python_path} is missing robodk / PyYAML / PySide6 after install."
+    )
 
 
 def robodk_seems_running() -> bool:
@@ -399,50 +621,68 @@ def robodk_seems_running() -> bool:
         return False
 
 
-def write_python_setting(python_path: str) -> None:
-    """Best-effort write of Path_PythonRun into the user settings.ini (Windows).
-
-    RoboDK exposes no stable scriptable way to set this. On Windows, writing settings.ini
-    while RoboDK is closed usually works -- still verify in Tools > Options > Python.
-    """
-    if platform.system() != "Windows":
-        print("Note: --write-python-setting is only implemented for Windows settings.ini.")
-        print("Set Tools > Options > Python manually on this OS.")
-        return
-
-    if robodk_seems_running():
-        raise SystemExit(
-            "RoboDK appears to be running. Quit RoboDK completely, then re-run with "
-            "--write-python-setting (otherwise the setting is overwritten on exit)."
-        )
-
-    settings = Path.home() / "AppData/Roaming/RoboDK/settings.ini"
-    if not settings.is_file():
-        raise SystemExit(f"RoboDK settings not found: {settings}")
-
+def patch_settings_python(settings: Path, python_path: str) -> list[str]:
+    """Update Path_PythonRun keys in an existing settings.ini. Does not create the file."""
     value = str(Path(python_path).resolve()).replace("\\", "/")
     text = settings.read_text(encoding="utf-8", errors="replace")
-
-    # Which key holds the interpreter varies by RoboDK version: older builds use
-    # Path_PythonRun, newer ones Path_PythonRun2, and a given settings.ini normally has
-    # only one of them. Update every key that is present rather than betting on one.
     written: list[str] = []
     for key in ("Path_PythonRun", "Path_PythonRun2"):
         if re.search(rf"(?m)^{key}=", text):
             text = re.sub(rf"(?m)^{key}=.*$", f"{key}={value}", text)
             written.append(key)
-
     if not written:
         text = text.rstrip() + f"\nPath_PythonRun2={value}\n"
         written.append("Path_PythonRun2 (added)")
-
     settings.write_text(text, encoding="utf-8", newline="\n")
-    print(f"Wrote {', '.join(written)} = {value} into {settings}")
+    return written
+
+
+def write_python_setting(
+    python_path: str,
+    *,
+    running: bool | None = None,
+    settings_files: list[Path] | None = None,
+    system: str | None = None,
+    home: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> list[Path]:
+    """Write Path_PythonRun into every existing settings.ini. Never creates the file."""
+    if running is None:
+        running = robodk_seems_running()
+    if running:
+        raise SystemExit(
+            "RoboDK appears to be running. Quit RoboDK completely, then re-run:\n"
+            "  python3 scripts/install_app.py -y\n"
+            "(otherwise the setting is overwritten on exit)."
+        )
+
+    files = settings_files
+    if files is None:
+        files = [
+            path
+            for path in candidate_settings_ini(system=system, home=home, environ=environ)
+            if path.is_file()
+        ]
+    existing = [path for path in files if path.is_file()]
+    if not existing:
+        raise SystemExit(_OPEN_ONCE)
+
+    written_files: list[Path] = []
+    for settings in existing:
+        keys = patch_settings_python(settings, python_path)
+        print(f"Wrote {', '.join(keys)} = {python_path} into {settings}")
+        written_files.append(settings)
     print("Open Tools > Options > Python once after restart to confirm it stuck.")
+    return written_files
 
 
-def print_python_path_instructions(python_path: str | None) -> None:
+def print_python_path_instructions(python_path: str | None, *, wrote_settings: bool) -> None:
     print()
+    if wrote_settings and python_path:
+        print("Python interpreter for RoboDK:")
+        print(f"  {python_path}")
+        print("  Confirm Tools > Options > Python after restart (must stay an absolute path).")
+        return
     print("Python interpreter for RoboDK (required):")
     print("  1. Open RoboDK")
     print("  2. Tools > Options > Python")
@@ -452,13 +692,28 @@ def print_python_path_instructions(python_path: str | None) -> None:
         print(f"     {python_path}")
         if not python_has_deps(python_path):
             print("     WARNING: this interpreter is missing robodk / PyYAML / PySide6.")
-            print("     Re-run: python scripts/install_app.py -y --python <path>")
+            print("     Re-run: python3 scripts/install_app.py -y")
     else:
         print("     <absolute path to a python with robodk, PyYAML and PySide6>")
     print("  4. Restart RoboDK")
     print()
-    print("Optional, with RoboDK fully quit:")
-    print("  python scripts/install_app.py -y --write-python-setting --python <path>")
+    print("With RoboDK fully quit, this is written for you by:")
+    print("  python3 scripts/install_app.py -y")
+
+
+def resolve_unix_python(explicit: str | None) -> str:
+    if explicit:
+        resolved = resolve_python(explicit)
+        if not resolved:
+            raise SystemExit(f"Python not found: {explicit}")
+        return resolved
+    creator = str(Path(sys.executable).resolve())
+    if not python_meets_min(creator):
+        raise SystemExit(
+            f"{creator} is older than Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}. "
+            "Install Python 3.9+ and re-run: python3 scripts/install_app.py -y"
+        )
+    return ensure_venv(creator, VENV_DIR)
 
 
 # ---------------------------------------------------------------------------
@@ -469,13 +724,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--apps-dir", type=Path, help="Override auto-detected RoboDK Apps folder")
+    parser.add_argument("--apps-dir", type=Path, help="Override auto-detected RoboDK Apps folder (Windows)")
     parser.add_argument(
-        "--python",
-        help="Python interpreter for deps / RoboDK Options (default: this one if usable)",
+        "--addins-dir",
+        type=Path,
+        help="Override user-level RoboDK Addins folder (Linux / macOS; Windows if set)",
     )
     parser.add_argument(
-        "-y", "--yes", action="store_true", help="Overwrite existing install without asking"
+        "--python",
+        help="Python interpreter for deps / RoboDK Options (skips .venv on Linux/macOS)",
+    )
+    parser.add_argument(
+        "-y", "--yes", action="store_true", help="Overwrite existing install; write Python path if RoboDK is quit"
     )
     parser.add_argument(
         "--sync", action="store_true", help="Rebuild and overwrite the install (implies -y)"
@@ -489,52 +749,95 @@ def main() -> int:
     parser.add_argument(
         "--write-python-setting",
         action="store_true",
-        help="Best-effort write Path_PythonRun into Windows settings.ini (quit RoboDK first)",
+        help="Write Path_PythonRun into existing settings.ini (quit RoboDK first; implied by -y/--sync)",
     )
     args = parser.parse_args()
 
     assume_yes = args.yes or args.sync
+    write_settings = assume_yes or args.write_python_setting
+    windows = platform.system() == "Windows"
     if args.sync:
         print("Syncing CtNav from this repo into the local RoboDK install ...")
 
     build_dir = build_package.build()
     print(f"Built package at: {build_dir}")
 
-    apps_dir = (args.apps_dir or find_apps_dir() or prompt_for_apps_dir()).expanduser()
-    apps_dir.mkdir(parents=True, exist_ok=True)
+    running = robodk_seems_running()
+    problems: list[str] = []
+    addin_root: Path | None = None
 
-    print(f"Installed CtNav (AppLoader) to: {install_into_apps(apps_dir, build_dir, assume_yes)}")
+    if windows:
+        apps_dir = (args.apps_dir or find_apps_dir() or prompt_for_apps_dir()).expanduser()
+        apps_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Installed CtNav (AppLoader) to: {install_into_apps(apps_dir, build_dir, assume_yes)}")
+        addins_dir = args.addins_dir.expanduser() if args.addins_dir else find_addins_dir(apps_dir)
+    else:
+        if args.apps_dir:
+            print("Note: --apps-dir is ignored on Linux/macOS; CtNav installs to user Addins only.")
+        addins_dir = (args.addins_dir or user_addins_dir()).expanduser()
+        addins_dir.mkdir(parents=True, exist_ok=True)
 
-    addins_dir = find_addins_dir(apps_dir)
-    if addins_dir and not args.skip_addin:
-        if robodk_seems_running():
+    if not args.skip_addin:
+        if not addins_dir:
+            print("Note: no Addins folder next to Apps; skipped the modern Add-in install.")
+            if write_settings:
+                problems.append("No Addins folder; skipped Enable.")
+        elif running:
             print(
                 "RoboDK is running: left the Add-in folder untouched "
                 "(replacing it while locked is what makes the toolbar icon vanish)."
             )
-            print("Quit RoboDK, then re-run: python scripts/install_app.py --sync")
+            print("Quit RoboDK, then re-run: python3 scripts/install_app.py -y")
+            problems.append("RoboDK is running; Add-in was not replaced and settings were not written.")
         else:
             addin_root = install_into_addins(addins_dir, build_dir)
             print(f"Installed CtNav (Add-in) to: {addin_root}")
-            if platform.system() == "Windows":
-                enable_addin_windows(addin_root)
-    elif not args.skip_addin:
-        print("Note: no Addins folder next to Apps; skipped the modern Add-in install.")
+            status = enable_addin(addin_root)
+            if status == "missing" and write_settings:
+                problems.append(
+                    "AddinManager.ini not found. Open RoboDK once, quit fully, then re-run:\n"
+                    "  python3 scripts/install_app.py -y"
+                )
+            elif status == "unparsed" and write_settings:
+                problems.append("Could not parse AddinManager.ini; enable CtNav in Tools > Add-in Manager.")
 
-    python_path = resolve_python(args.python)
+    if windows:
+        python_path = resolve_python(args.python)
+    else:
+        python_path = resolve_unix_python(args.python)
+
     if python_path and python_has_deps(python_path):
         print(f"Python deps OK: {python_path}")
     elif python_path and not args.skip_deps:
         install_dependencies(python_path)
+        require_working_pyside(python_path)
+        print(f"Python deps OK: {python_path}")
     elif python_path:
         print(f"Python selected but deps incomplete: {python_path}")
+    else:
+        problems.append("No Python interpreter resolved.")
 
-    if args.write_python_setting:
-        if not python_path:
-            raise SystemExit("--write-python-setting requires a resolvable --python path")
-        write_python_setting(python_path)
+    wrote_settings = False
+    if write_settings and python_path and not running:
+        try:
+            write_python_setting(python_path)
+            wrote_settings = True
+        except SystemExit as exc:
+            problems.append(str(exc))
+    elif write_settings and running:
+        # Already recorded when the add-in was skipped; still say it if add-in was skipped via flag.
+        if "RoboDK is running" not in " ".join(problems):
+            problems.append(
+                "RoboDK is running; settings.ini was not written. Quit, then re-run: "
+                "python3 scripts/install_app.py -y"
+            )
 
-    print_python_path_instructions(python_path)
+    print_python_path_instructions(python_path, wrote_settings=wrote_settings)
+    if problems:
+        print("Install did not finish:")
+        for problem in problems:
+            print(f"  {problem}")
+        return 1
     print("Done. Restart RoboDK to reload the toolbar / Add-in.")
     return 0
 

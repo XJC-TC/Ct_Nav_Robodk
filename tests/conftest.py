@@ -8,25 +8,21 @@ absent so the suite still passes on a machine without it.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 
-from ct_nav import load_cluster
-
-DEFAULT_CLUSTER = Path(r"D:/Bitbucket/ct_config/azula1")
-
-
-def _cluster_dir() -> Path:
-    return Path(os.environ.get("CT_CONFIG_CLUSTER", DEFAULT_CLUSTER))
+from ct_nav import discover_cluster_dir, load_cluster
 
 
 @pytest.fixture(scope="session")
 def cluster_dir() -> Path:
-    path = _cluster_dir()
-    if not path.is_dir():
-        pytest.skip(f"ct_config cluster not available at {path}")
+    path = discover_cluster_dir()
+    if path is None or not path.is_dir():
+        pytest.skip(
+            "ct_config cluster not available (set CT_CONFIG_CLUSTER or place azula1 "
+            "at ~/Bitbucket/ct_config/azula1)"
+        )
     return path
 
 
