@@ -90,6 +90,24 @@ python -m ct_nav_robodk.ui.panel
   the station straight to it.
 - **Go / Stop** — animated playback. Stop halts between interpolation frames, leaving the
   arm part-way through a step rather than snapping to the end of it.
+- **Path cubes** — optional, off by default, remembered between sessions. While the
+  selected arm moves, CtNav keeps a CAD-hugging cube wrap on each UR link plus the
+  currently visible EOAT and cable guard (20 / 40 / 80 mm cubes; the wrap is posed
+  to the host each frame so it is still on the arm at the final pose). Rails are
+  not wrapped. A coarser unique-cell trail (80 mm, up to 12 000 cells per arm)
+  records swept space: stamps are sparse during motion (about every 80 mm or 3
+  frames) with interpolation between stamps, and the end pose is always flushed.
+  Colours: blue `mhr_xz`, orange `mhr_x`, green `mhr_u1`, violet `mhr_u2`.
+  White is unused; red is reserved for hits. **Clear paths** removes the cubes;
+  closing the panel does too, so they are not saved into the `.rdk` by accident.
+- **Collision** — optional, **off by default**, not turned on with Path cubes. When
+  checked, the live wrap is the current-pose geometry and the 80 mm trail cubes are
+  the swept-space geometry: if the live wrap or a new trail cube overlaps another entity
+  (cell CAD, another robot, or another arm's trail) playback stops where it is. The moving arm's
+  own body — and anything already overlapping it when Go starts — is ignored, so the
+  first pose does not light up red. This is our own axis-aligned box test, not RoboDK
+  `Collisions()`, so it stays light enough to run every interpolation frame. Hidden
+  items are ignored.
 - **Export as Program** — see [Exported programs](#exported-programs).
 - **Reset to PARK** — retracts the arm to the selected park pose without moving the rails.
 - **Calibrate rail** — see [Rail calibration](#rail-calibration).
@@ -187,12 +205,16 @@ ct_nav_robodk/                 RoboDK bindings
   connection.py                Robolink with a timeout a 600 MB station survives
   station_map.py               station_map.yaml load / save / calibrate
   driver.py                    live playback via setJoints
+  path_geom.py                 colour-block meshes, bone samples, downsampling (no robodk)
+  path_trace.py                CAD-hug live wrap + coarse swept trail (no rails)
+  collision.py                 our AABB cube-vs-entity test (no RoboDK Collisions())
   program_export.py            targets + program generation
   ui/panel.py                  the PySide6 panel
 roboapp/CtNav/                 App shell (manifest.xml, AppConfig.ini, CtNavPanel.py, svg)
 scripts/
   inspect_station.py           dump a station's items, DOF and joint limits
   validate_station.py          drive targets and check the station against ct_config
+  spike_path_collision.py      time Collisions() / JointPoses on the open station
   build_package.py             build a self-contained App under dist/
   install_app.py               install / sync into the local RoboDK
 station_map.yaml               verified map for NABOO-01
@@ -216,6 +238,8 @@ with `CT_CONFIG_CLUSTER`.
 
 ## Not covered
 
-`calibration/*_arm_locations.yaml` (Cartesian TCP offsets) and collision checking are
-out of scope. Physical EOAT attach/detach is handled separately by the
+`calibration/*_arm_locations.yaml` (Cartesian TCP offsets) are out of scope. Path &
+collision is a lightweight cube-vs-entity stop, not a motion planner: it does not
+rewrite navigation or route around obstacles.
+Physical EOAT attach/detach is handled separately by the
 `Robodk_Auto_Attach` App; CtNav only toggles which EOAT CAD is visible on each MHR.

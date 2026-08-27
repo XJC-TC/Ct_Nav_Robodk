@@ -4,9 +4,11 @@ Everything that imports ``robodk`` lives here; ``ct_nav`` stays RoboDK-free so i
 be tested without an install.
 """
 
+from .collision import CollisionHit, CollisionReport, EntityIndex
 from .connection import active_station_name, connect
 from .driver import Driver, DriverError, DriverOptions, nearest_highway_node, read_rail_pose
-from .eoat import EoatError, EoatInventory, apply_eoat, list_eoats
+from .eoat import EoatError, EoatInventory, apply_eoat, list_eoats, visible_tooling_items
+from .path_trace import PathMonitor, PathTraceError
 from .program_export import ExportError, ExportResult, export_plan
 from .station_map import (
     ArmMap,
@@ -23,6 +25,8 @@ from .station_map import (
 
 __all__ = [
     "ArmMap",
+    "CollisionHit",
+    "CollisionReport",
     "Driver",
     "DriverError",
     "DriverOptions",
@@ -30,6 +34,9 @@ __all__ = [
     "EoatInventory",
     "ExportError",
     "ExportResult",
+    "EntityIndex",
+    "PathMonitor",
+    "PathTraceError",
     "RailMap",
     "StationMap",
     "StationMapError",
@@ -40,6 +47,7 @@ __all__ = [
     "export_plan",
     "apply_eoat",
     "list_eoats",
+    "visible_tooling_items",
     "load_default_station_map",
     "load_station_map",
     "nearest_highway_node",

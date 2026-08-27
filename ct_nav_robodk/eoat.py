@@ -170,6 +170,148 @@ def _collect_candidates(rdk: robolink.Robolink, robot: robolink.Item) -> list[ro
     return list(found.values())
 
 
+def visible_tooling_items(rdk: robolink.Robolink, robot: robolink.Item) -> list[robolink.Item]:
+    """Currently visible EOATs and cable guards parented under ``robot``."""
+    return [item for item in _collect_candidates(rdk, robot) if _visible(item)]
+
+
+def _item_ptr(item: robolink.Item) -> int:
+    raw = getattr(item, "item", None)
+    return int(raw) if raw is not None else id(item)
+
+
+def _prefer_leaf_meshes(items: list[robolink.Item]) -> list[robolink.Item]:
+    """Drop a parent if one of its descendants is also in the list.
+
+    Tool items often have a dummy mesh at the TCP while the real CAD sits on a
+    child object. Wrapping both puts an offset blob on the tool origin.
+    """
+    ptrs = {_item_ptr(item) for item in items}
+    kept: list[robolink.Item] = []
+    for item in items:
+        has_wrapped_child = False
+        for child in _walk_children(item):
+            if _item_ptr(child) in ptrs:
+                has_wrapped_child = True
+                break
+        if not has_wrapped_child:
+            kept.append(item)
+    return kept
+
+
+def live_payload_geometry(rdk: robolink.Robolink, robot: robolink.Item) -> list[robolink.Item]:
+    """Meshes for the path-trace live wrap: visible active EOAT + cable guard only.
+
+    Rails, flange ObjectLinks, and hidden tools are excluded. Name-matching on
+    tooling roots is enough: mounted CAD in this station hangs under those items.
+    Parents are dropped when a child mesh is already in the list.
+    """
+    return _prefer_leaf_meshes(visible_tooling_geometry(rdk, robot))
+
+
+def visible_tooling_geometry(rdk: robolink.Robolink, robot: robolink.Item) -> list[robolink.Item]:
+    """Visible EOAT/guard roots plus every visible CAD child (the meshes that actually fill space)."""
+    found: dict[str, robolink.Item] = {}
+
+    def consider(item: robolink.Item) -> None:
+        try:
+            if not item.Valid() or not _visible(item):
+                return
+            item_type = item.Type()
+            name = item.Name()
+        except Exception:
+            return
+        if item_type not in (robolink.ITEM_TYPE_OBJECT, robolink.ITEM_TYPE_TOOL):
+            return
+        if name.startswith("CtNav"):
+            return
+        found[f"{id(item)}:{name}"] = item
+
+    for root in visible_tooling_items(rdk, robot):
+        consider(root)
+        for child in _walk_children(root):
+            consider(child)
+    return list(found.values())
+
+
+def flange_payload_geometry(rdk: robolink.Robolink, robot: robolink.Item) -> list[robolink.Item]:
+    """CAD hanging off the wrist: active tool, named EOATs, and objects parented to the last links.
+
+    Mounted tools in this station are often ordinary objects under the flange ObjectLink,
+    not Tools named EOAT, so name-matching alone misses them.
+    """
+    found: dict[str, robolink.Item] = {}
+    link_ptrs: set[int] = set()
+    roots: list[robolink.Item] = []
+
+    def ptr(item: robolink.Item) -> int:
+        raw = getattr(item, "item", None)
+        return int(raw) if raw is not None else id(item)
+
+    def add_root(item: robolink.Item | None) -> None:
+        try:
+            if item is not None and item.Valid():
+                roots.append(item)
+        except Exception:
+            return
+
+    try:
+        add_root(robot.getLink(robolink.ITEM_TYPE_TOOL))
+    except Exception:
+        pass
+    try:
+        for tool in robot.getLinks(robolink.ITEM_TYPE_TOOL) or []:
+            add_root(tool)
+    except Exception:
+        pass
+    for item in visible_tooling_items(rdk, robot):
+        add_root(item)
+
+    try:
+        njoints = len(robot.Joints().list())
+    except Exception:
+        njoints = 6
+    for index in range(max(njoints - 3, 0), njoints + 2):
+        try:
+            link = robot.ObjectLink(index)
+            if not link.Valid():
+                continue
+            link_ptrs.add(ptr(link))
+            add_root(link)
+        except Exception:
+            continue
+
+    def consider(item: robolink.Item, *, skip_if_link: bool) -> None:
+        try:
+            if not item.Valid():
+                return
+            if skip_if_link and ptr(item) in link_ptrs:
+                return
+            item_type = item.Type()
+            name = item.Name()
+        except Exception:
+            return
+        if item_type not in (robolink.ITEM_TYPE_OBJECT, robolink.ITEM_TYPE_TOOL):
+            return
+        if name.startswith("CtNav"):
+            return
+        try:
+            shown = bool(item.Visible())
+        except Exception:
+            shown = False
+        if not shown:
+            return
+        found[f"{ptr(item)}:{name}"] = item
+
+    for root in roots:
+        is_link = ptr(root) in link_ptrs
+        if not is_link:
+            consider(root, skip_if_link=False)
+        for child in _walk_children(root):
+            consider(child, skip_if_link=True)
+    return list(found.values())
+
+
 def list_eoats(rdk: robolink.Robolink, robot: robolink.Item, arm_name: str) -> EoatInventory:
     """EOATs parented under ``robot``, plus any Tool RoboDK lists as belonging to it."""
     inventory = EoatInventory(arm=arm_name, robot_item=robot.Name())

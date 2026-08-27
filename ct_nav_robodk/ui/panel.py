@@ -43,6 +43,7 @@ from ..driver import (
     read_rail_robodk,
 )
 from ..eoat import EoatError, apply_eoat, list_eoats
+from ..path_trace import PathMonitor
 from ..program_export import ExportError, export_plan
 from ..station_map import (
     LOCAL_MAP_NAME,
@@ -71,6 +72,7 @@ class CtNavPanel(QtWidgets.QWidget):
 
         self._rdk = rdk
         self._driver: Driver | None = None
+        self._path_monitor: PathMonitor | None = None
         self._cluster: ClusterConfig | None = None
         self._plan: Plan | None = None
         self._running_plan: Plan | None = None
@@ -272,6 +274,36 @@ class CtNavPanel(QtWidgets.QWidget):
         speed_row.addStretch(1)
         outer.addLayout(speed_row)
 
+        path_row = QtWidgets.QHBoxLayout()
+        self.path_check_box = QtWidgets.QCheckBox("Path cubes")
+        self.path_check_box.setToolTip(
+            "Wrap the UR body and visible EOAT/cable guard in CAD-hugging cubes, "
+            "and leave a coarse trail of swept space. Rails are not wrapped. "
+            "Collision stopping is a separate checkbox."
+        )
+        self.path_check_box.setChecked(
+            self._settings.value("path_cubes_enabled", False, type=bool)
+        )
+        self.path_check_box.toggled.connect(self._on_path_cubes_toggled)
+        self.collision_check_box = QtWidgets.QCheckBox("Collision")
+        self.collision_check_box.setToolTip(
+            "Stop if a new cube overlaps another entity (cell CAD, another robot, "
+            "or another arm's trail). The moving arm's own body at the start pose "
+            "is ignored. Hits are red. Off by default."
+        )
+        self.collision_check_box.setChecked(False)
+        self.collision_check_box.setEnabled(self.path_check_box.isChecked())
+        self.collision_check_box.toggled.connect(self._on_collision_check_toggled)
+        clear_paths = QtWidgets.QPushButton("Clear paths")
+        clear_paths.setToolTip("Remove every CtNav colour-block trail from the station")
+        clear_paths.clicked.connect(self._on_clear_paths)
+        self._clear_paths_button = clear_paths
+        path_row.addWidget(self.path_check_box)
+        path_row.addWidget(self.collision_check_box)
+        path_row.addWidget(clear_paths)
+        path_row.addStretch(1)
+        outer.addLayout(path_row)
+
         buttons = QtWidgets.QHBoxLayout()
         self.go_button = QtWidgets.QPushButton("Go")
         self.go_button.setDefault(True)
@@ -319,6 +351,7 @@ class CtNavPanel(QtWidgets.QWidget):
             return False
 
         self._driver = Driver(self._rdk, station_map, DriverOptions())
+        self._path_monitor = PathMonitor(self._rdk)
         problems = self._driver.verify()
         station = active_station_name(self._rdk) or "(no station)"
         if problems:
@@ -568,6 +601,12 @@ class CtNavPanel(QtWidgets.QWidget):
             self._set_status(str(exc), error=True)
             return
 
+        self._attach_path_check(plan.arm, replace=True)
+        if self.path_check_box.isChecked() and (
+            self._path_monitor is None or self._path_monitor.arm != plan.arm
+        ):
+            return
+
         self._driver.options = DriverOptions(
             animate=self.animate_check.isChecked(), speed=self.speed_spin.value()
         )
@@ -577,7 +616,14 @@ class CtNavPanel(QtWidgets.QWidget):
         self._motion_highlight = None
         self._motion_finish_highway = plan.end_highway_node
         self._set_running(True)
-        self._set_status(f"Running {plan.label} ({len(plan.steps)} steps) ...")
+        checking = ""
+        if self.path_check_box.isChecked():
+            checking = (
+                " (path cubes + collision)"
+                if self.collision_check_box.isChecked()
+                else " (path cubes)"
+            )
+        self._set_status(f"Running {plan.label} ({len(plan.steps)} steps){checking} ...")
         self._timer.start()
 
     def _on_tick(self) -> None:
@@ -615,6 +661,9 @@ class CtNavPanel(QtWidgets.QWidget):
             row = self._motion_highlight if self._motion_highlight is not None else index
             self.steps_list.setCurrentRow(row)
 
+        if self.path_check_box.isChecked() and not self._poll_collision_or_stop():
+            return
+
     def _on_go(self) -> None:
         if self._plan is None:
             self._set_status("Nothing selected to run.", error=True)
@@ -630,6 +679,16 @@ class CtNavPanel(QtWidgets.QWidget):
         self._frames = None
         self._motion_highlight = None
         self._motion_finish_highway = None
+        if self._path_monitor is not None:
+            self._path_monitor.stop()
+            extra = []
+            if self.path_check_box.isChecked():
+                if self._path_monitor.painted:
+                    extra.append(f"{self._path_monitor.painted} path cubes")
+                if self._path_monitor.last_error:
+                    extra.append(self._path_monitor.last_error)
+            if extra:
+                message = f"{message} ({'; '.join(extra)})"
         self._set_running(False)
         self._refresh_rail_label()
         self._set_status(message, error=error)
@@ -649,8 +708,13 @@ class CtNavPanel(QtWidgets.QWidget):
             self.eoat_combo,
             self._eoat_apply_button,
             self._eoat_refresh_button,
+            self.path_check_box,
+            self.collision_check_box,
+            self._clear_paths_button,
         ):
             widget.setEnabled(not running)
+        if not running:
+            self.collision_check_box.setEnabled(self.path_check_box.isChecked())
 
     def _on_step_clicked(self, item: QtWidgets.QListWidgetItem) -> None:
         """Defer a joint-move until we know this is not the start of a double-click."""
@@ -675,11 +739,18 @@ class CtNavPanel(QtWidgets.QWidget):
         index = self.steps_list.row(item)
         try:
             self._driver.apply_step(self._plan.arm, self._plan.steps[index])
+            self._attach_path_check(self._plan.arm, replace=False)
+            hit = self._collision_message(index)
+            if self._path_monitor is not None:
+                self._path_monitor.stop()
         except (DriverError, StationMapError) as exc:
             self._set_status(str(exc), error=True)
             return
         self._sync_highway_from_step(self._plan.arm, self._plan.steps[index])
         self._refresh_rail_label()
+        if hit:
+            self._set_status(hit, error=True)
+            return
         self._set_status(f"Jumped to step {index + 1}: {self._plan.steps[index].label}")
 
     def _clear_swallow_step_click(self) -> None:
@@ -704,6 +775,7 @@ class CtNavPanel(QtWidgets.QWidget):
         self._current_step = -1
         self._motion_highlight = index
         self._motion_finish_highway = _highway_node_of(step)
+        self._attach_path_check(self._plan.arm, replace=False)
         self._set_running(True)
         self._set_status(f"Joint-moving to step {index + 1}: {step.label} ...")
         self._timer.start()
@@ -813,6 +885,64 @@ class CtNavPanel(QtWidgets.QWidget):
 
     # ------------------------------------------------------------------
 
+    def _on_path_cubes_toggled(self, checked: bool) -> None:
+        self._settings.setValue("path_cubes_enabled", checked)
+        if not checked:
+            self.collision_check_box.setChecked(False)
+        self.collision_check_box.setEnabled(checked and self.go_button.isEnabled())
+
+    def _on_collision_check_toggled(self, checked: bool) -> None:
+        self._settings.setValue("path_stop_on_collision", checked)
+
+    def _on_clear_paths(self) -> None:
+        if self._path_monitor is None and not self._connect_station():
+            return
+        if self._path_monitor is None:
+            self._path_monitor = PathMonitor(self._rdk)
+        self._path_monitor.clear()
+        self._set_status("Cleared CtNav path traces.")
+
+    def _attach_path_check(self, arm: str, *, replace: bool) -> None:
+        if not self.path_check_box.isChecked() or self._driver is None:
+            return
+        if self._path_monitor is None:
+            if not self._connect_station():
+                return
+            self._path_monitor = PathMonitor(self._rdk)
+        try:
+            items = self._driver.items_for(arm)
+            self._path_monitor.attach(arm, items, replace=replace)
+        except (DriverError, StationMapError) as exc:
+            self._set_status(str(exc), error=True)
+
+    def _poll_collision_or_stop(self) -> bool:
+        """True to keep playing. False if a cube already overlapped an entity."""
+        message = self._collision_message()
+        if message:
+            self._finish(message, error=True)
+            return False
+        return True
+
+    def _collision_message(self, step_index: int | None = None) -> str | None:
+        """A status line when the current pose collides; None if checking is off or clear."""
+        if (
+            not self.path_check_box.isChecked()
+            or self._path_monitor is None
+            or self._path_monitor.arm is None
+        ):
+            return None
+        report = self._path_monitor.observe(
+            check_collision=self.collision_check_box.isChecked()
+        )
+        if not report.hit:
+            return None
+        index = self._current_step if step_index is None else step_index
+        plan = self._running_plan or self._plan
+        if plan is not None and 0 <= index < len(plan.steps):
+            step = plan.steps[index]
+            return f"Collision at step {index + 1} [{step.label}]: {report.describe()}"
+        return f"Collision: {report.describe()}"
+
     def _set_status(self, message: str, error: bool = False) -> None:
         self.status.setStyleSheet("color: #c00000;" if error else "")
         self.status.setText(message)
@@ -820,6 +950,9 @@ class CtNavPanel(QtWidgets.QWidget):
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
         self._step_click_timer.stop()
         self._timer.stop()
+        if self._path_monitor is not None:
+            self._path_monitor.stop()
+            self._path_monitor.clear()
         super().closeEvent(event)
 
 
@@ -851,7 +984,7 @@ def main() -> int:
     except Exception:
         traceback.print_exc()
         return 1
-    panel.resize(560, 760)
+    panel.resize(620, 820)
     panel.show()
     return app.exec()
 

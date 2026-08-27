@@ -87,7 +87,7 @@ def ActionChecked():
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     panel = CtNavPanel(rdk=RDK)
-    panel.resize(560, 780)
+    panel.resize(620, 820)
     panel.show()
 
     # Bridge roboapps' "is the toolbar button still checked?" state with Qt's event
